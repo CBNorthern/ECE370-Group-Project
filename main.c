@@ -1,0 +1,281 @@
+#include <msp430fr6989.h>
+
+#define FLAGS UCA1IFG // Contains the transmit & receive flags
+#define RXFLAG UCRXIFG // Receive flag
+#define TXFLAG UCTXIFG // Transmit flag
+#define TXBUFFER UCA1TXBUF // Transmit buffer
+#define RXBUFFER UCA1RXBUF // Receive buffer
+
+#define redLED BIT0 // Red LED at P1.0
+#define greenLED BIT7 // Green LED at P9.7
+#define BUT1 BIT1 // Button S1 at P1.1
+#define BUT2 BIT2 // Button S2 at P1.2
+
+//global variable for measurments
+unsigned int data = 0;
+
+///////// Function Headers ///////////////////////////////////
+void Initialize_I2C(void);
+int i2c_write_word(unsigned char i2c_address, unsigned char i2c_reg, unsigned int data);
+int i2c_read_word(unsigned char i2c_address, unsigned char i2c_reg);
+///////// Function Headers ///////////////////////////////////
+
+/////////UART Functions //////////////////////////////////////
+// Initial clock: SMCLK @ 1 MHz with oversampling
+void Initialize_UART(void){
+
+    // Divert pins to UART functionality
+    P3SEL1 &= ~(BIT4|BIT5);
+    P3SEL0 |= (BIT4|BIT5);
+
+    // Use SMCLK clock; leave other settings default
+    UCA1CTLW0 |= UCSSEL_2;
+
+    // Configure the clock dividers and modulators
+        // UCBR=6, UCBRF=8, UCBRS=0x20, UCOS16=0 (no oversampling)
+        UCA1BRW = 6;
+        UCA1MCTLW = UCBRS5|UCBRF3|UCOS16; // or, UCA1MCTLW = 0x2081;
+
+    // Exit the reset state (so transmission/reception can begin)
+    UCA1CTLW0 &= ~UCSWRST;
+}
+void uart_write_char(unsigned char ch){
+
+    // Wait for any ongoing transmission to complete
+    while ( (FLAGS & TXFLAG)==0 ) {}
+
+    // Write the byte to the transmit buffer
+    TXBUFFER = ch;
+}
+
+// The function returns the byte; if none received, returns NULL
+unsigned char uart_read_char(void){
+
+    unsigned char temp;
+
+    // Return NULL if no byte received
+    if( (FLAGS & RXFLAG) == 0)
+        return '\0';
+
+    // Otherwise, copy the received byte (clears the flag) and return it
+    temp = RXBUFFER;
+    return temp;
+}
+
+// Function to configure ACLK to 32 KHz crystal
+void config_ACLK_to_32KHz_crystal() {
+    // By default, ACLK runs on LFMODCLK at 5MHz/128 = 39 KHz
+    // Reroute pins to LFXIN/LFXOUT functionality
+    PJSEL1 &= ~BIT4;
+    PJSEL0 |= BIT4;
+
+    // Wait until the oscillator fault flags remain cleared
+    CSCTL0 = CSKEY; // Unlock CS registers
+    do {
+        CSCTL5 &= ~LFXTOFFG; // Local fault flag
+        SFRIFG1 &= ~OFIFG; // Global fault flag
+    } while((CSCTL5 & LFXTOFFG) != 0);
+
+    CSCTL0_H = 0; // Lock CS registers
+
+    return;
+}
+
+
+int main(void)
+{
+	WDTCTL = WDTPW | WDTHOLD;	// stop watchdog timer
+	PM5CTL0 &= ~LOCKLPM5; // Enable the GPIO pins
+	Initialize_UART();
+	Initialize_I2C();
+
+    P1DIR |= redLED; // Direct pin as output (for red LED)
+    P1OUT &= ~redLED; // Turn LED Off
+
+    P9DIR |= greenLED; //Direct pin as output
+    P9OUT &= ~greenLED; // Turn Green LED Off
+     // Configure buttons
+     P1DIR &= ~BUT1;       // Direct pin as input
+     P1REN |= BUT1;           // Enable built-in resistor
+     P1OUT |= BUT1;           // Set resistor as pull-up
+
+     P1DIR &= ~BUT2;        // Direct pin as input
+     P1REN |= BUT2;           // Enable built-in resistor
+     P1OUT |= BUT2;           // Set resistor as pull-up
+
+    // Configure ACLK to the 32 KHz crystal (function call)
+    config_ACLK_to_32KHz_crystal();
+
+    // Configure channel 0
+    TA0CCRO = 32768 - 1;
+    TA0CCTL0 |= CCIE;
+    TA0CCTLO &= ~CCIFG;
+
+    TACTL = TASSEL_1|ID_0|MC_2|TACTRL;
+    // Configure channel 1
+    TA0CCR1 = 65536 - 1;  // We need to do a counter so it will be 4 seconds
+    TA0CCTL1 |= CCIE;
+    TA0CCTL1 &= ~CCIFG;
+
+    TA0CTL = TASSEL_1|ID_0|MC_2|TACTRL;
+   // Ensure the flag is cleared at the start
+    TA0CTL &= ~TAIFG;
+
+    _low_power_mode_3(); // Enable Low Power Mode 3
+
+    //Configure the sensor
+     i2c_write_word(0x44, 0x01, 0x7604);
+
+
+    while(1){
+
+    }
+	return 0;
+}
+
+#pragma vector = TIMER_A0_VECTOR
+_interrupt void T0A0_ISR(){
+    // Take one illuminance measurement
+        uart_write_char('\r');
+        uart_write_char('\n');
+        uart_write_char('\n');
+
+        data = i2c_read_word(0x44, 0x00);
+        data = data*1.28;
+        uart_write_uint16(data);
+
+    TA0CCR0 = TACCR0 + 326768;
+}
+
+#pragma vector = TIMER_A1_VECTOR
+_interrup void T0A1_ISR(){
+    unsigned int i = 0;
+    for(i = 0; i<2; i++){ // Loop it two time to get a period of 4
+        if((TA0CCTL1 & (CCITG | CCIE)) == (CCIFG |CCIE)){
+            // Disable Channel 0
+            TA0CCTL0 &= ~CCIE;
+            // Take the average of the mesurments from the variable
+
+
+            // Re-Enable Channel 0
+            TA0CCR1 = 65536 - 1;
+            TA0CCTL0 |= CCIE;
+            // Set the date variable back to zero
+
+            TA0CCR1 = TA0CCR1 + 65536;
+        }
+    }
+}
+
+
+
+// Configure eUSCI in I2C master mode
+void Initialize_I2C(void) {
+    // Enter reset state before the configuration starts...
+    UCB1CTLW0 |= UCSWRST;
+    // Divert pins to I2C functionality
+    P4SEL1 |= (BIT1|BIT0);
+    P4SEL0 &= ~(BIT1|BIT0);
+    // Keep all the default values except the fields below...
+    // (UCMode 3:I2C) (Master Mode) (UCSSEL 1:ACLK, 2,3:SMCLK)
+    UCB1CTLW0 |= UCMODE_3 | UCMST | UCSSEL_3;
+    // Clock divider = 8 (SMCLK @ 1 MHz / 8 = 125 KHz)
+    UCB1BRW = 8;
+    // Exit the reset mode
+    UCB1CTLW0 &= ~UCSWRST;
+}
+
+
+void uart_write_uint16(unsigned int n){
+   unsigned int digit;
+    if(n>=10000){ // thousands
+        digit= (n/10000) %10;
+        uart_write_char('0'+ digit);
+
+    }
+    if(n>=1000){
+        digit = (n/1000) %10;
+        uart_write_char('0'+ digit);
+    }
+    if(n>= 100){
+        digit = (n/100)%10;
+        uart_write_char('0'+ digit);
+    }
+    if(n>=10){
+        digit = (n/10)%10;
+        uart_write_char ('0'+ digit);
+    }
+    if(n>=0){
+        digit = n%10;
+        uart_write_char('0'+ digit);
+    }
+
+}
+
+
+////////////////////////////////////////////////////////////////////
+// Write a word (2 bytes) to I2C (address, register)
+int i2c_write_word(unsigned char i2c_address, unsigned char i2c_reg, unsigned int data) {
+    unsigned char byte1, byte2;
+    byte1 = (data >> 8) & 0xFF; // MSByte
+    byte2 = data & 0xFF; // LSByte
+    UCB1I2CSA = i2c_address; // Set I2C address
+    UCB1CTLW0 |= UCTR; // Master writes (R/W bit = Write)
+    UCB1CTLW0 |= UCTXSTT; // Initiate the Start Signal
+    while ((UCB1IFG & UCTXIFG0) ==0) {}
+    UCB1TXBUF = i2c_reg; // Byte = register address
+    while((UCB1CTLW0 & UCTXSTT)!=0) {}
+    //********** Write Byte #1 ***************************
+    UCB1TXBUF = byte1;
+    while ( (UCB1IFG & UCTXIFG0) == 0) {}
+    //********** Write Byte #2 ***************************
+    UCB1TXBUF = byte2;
+    while ( (UCB1IFG & UCTXIFG0) == 0) {}
+    UCB1CTLW0 |= UCTXSTP;
+    while ( (UCB1CTLW0 & UCTXSTP) != 0) {}
+    return 0;
+}
+
+
+int i2c_read_word(unsigned char i2c_address, unsigned char i2c_reg) {
+    unsigned char byte1, byte2;
+    unsigned int data2;
+    // Initialize the bytes to make sure data is received every time
+    byte1 = 111;
+    byte2 = 111;
+    //********** Write Frame #1 ***************************
+    UCB1I2CSA = i2c_address; // Set I2C address
+
+    UCB1IFG &= ~UCTXIFG0;
+    UCB1CTLW0 |= UCTR; // Master writes (R/W bit = Write)
+    UCB1CTLW0 |= UCTXSTT; // Initiate the Start Signal
+    while ((UCB1IFG & UCTXIFG0) ==0) {}
+    UCB1TXBUF = i2c_reg; // Byte = register address
+    while((UCB1CTLW0 & UCTXSTT)!=0) {}
+    if(( UCB1IFG & UCNACKIFG )!=0) return -1;
+    UCB1CTLW0 &= ~UCTR; // Master reads (R/W bit = Read)
+    UCB1CTLW0 |= UCTXSTT; // Initiate a repeated Start Signal
+    //****************************************************
+    //********** Read Frame #1 ***************************
+    while ( (UCB1IFG & UCRXIFG0) == 0) {}
+    byte1 = UCB1RXBUF;
+    //****************************************************
+    //********** Read Frame #2 ***************************
+    while((UCB1CTLW0 & UCTXSTT)!=0) {}
+    UCB1CTLW0 |= UCTXSTP; // Setup the Stop Signal
+    while ( (UCB1IFG & UCRXIFG0) == 0) {}
+    byte2 = UCB1RXBUF;
+    while ( (UCB1CTLW0 & UCTXSTP) != 0) {}
+    //****************************************************
+    // Merge the two received bytes
+    data2 = ( (byte1 << 8) | (byte2 & 0xFF) );
+    return data2;
+}
+
+
+
+
+#include "Grlib/grlib/grlib.h"          
+#include "LcdDriver/lcd_driver.h"       
+#include <stdio.h>
+
