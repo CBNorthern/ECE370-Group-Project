@@ -6,6 +6,10 @@
 #define TXBUFFER UCA1TXBUF // Transmit buffer
 #define RXBUFFER UCA1RXBUF // Receive buffer
 
+#include "Grlib/grlib/grlib.h"          
+#include "LcdDriver/lcd_driver.h"       
+#include <stdio.h>
+
 #define redLED BIT0 // Red LED at P1.0
 #define greenLED BIT7 // Green LED at P9.7
 #define BUT1 BIT1 // Button S1 at P1.1
@@ -272,10 +276,4 @@ int i2c_read_word(unsigned char i2c_address, unsigned char i2c_reg) {
     return data2;
 }
 
-
-
-
-#include "Grlib/grlib/grlib.h"          
-#include "LcdDriver/lcd_driver.h"       
-#include <stdio.h>
 
