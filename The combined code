@@ -137,16 +137,16 @@ int main(void)
     Initialize_UART();
     Initialize_I2C();
 
+    // Configure LEDs
     P1DIR |= redLED; // Direct pin as output (for red LED)
     P1OUT &= ~redLED; // Turn LED Off
-
     P9DIR |= greenLED; //Direct pin as output
     P9OUT &= ~greenLED; // Turn Green LED Off
+
      // Configure buttons
      P1DIR &= ~BUT1;       // Direct pin as input
      P1REN |= BUT1;           // Enable built-in resistor
      P1OUT |= BUT1;           // Set resistor as pull-up
-
      P1DIR &= ~BUT2;        // Direct pin as input
      P1REN |= BUT2;           // Enable built-in resistor
      P1OUT |= BUT2;           // Set resistor as pull-up
@@ -154,50 +154,61 @@ int main(void)
     // Configure ACLK to the 32 KHz crystal (function call)
     config_ACLK_to_32KHz_crystal();
 
-    // Configure Timer 0 channel 0
-     TA0CCR0 = 120 - 1; // set number of cycles for PWM
+    // Configure Timer 0
+    // Channel 0
+    TA0CCR0 = 120 - 1; // set number of cycles for PWM
+    TA0CTL = TASSEL_1 | ID_0 | MC_1 | TACLR; // Crystal ACLK, Div = 0, Up Mode
+    // Channel 1
+    TA0CCR1 = 20 - 1; // start at lowest brightness level
+    TA0CCTL1 |= OUTMOD_7; // Reset/Set Output Mode
 
-     // Configure Timer 0 Channel 1
-     TA0CCR1 = 20 - 1; // start at lowest brightness level
-     TA0CCTL1 |= OUTMOD_7; // Reset/Set Output Mode
-
-     TA0CTL = TASSEL_1 | ID_0 | MC_1 | TACLR; // Crystal ACLK, Div = 0, Up Mode
-
-     // Configure Timer 1 channel 0
-     TA1CCR0 = 32768 - 1; // T = 1 second
-     TA1CCTL0 &= ~CCIFG;
-     TA1CCTL0 |= CCIE;
-
- // Configure Timer 1 channel 1
-      TA1CCR1 = 65536 - 1;  // We need to do a counter so it will be 4 seconds
-      TA1CCTL1 |= CCIE;
-      TA1CCTL1 &= ~CCIFG; // Clear the flag
-
-      TA1CTL = TASSEL_1 | ID_0 | MC_1 | TACLR; // Crystal ACLK, Div = 0, Up Mode
+    // Configure Timer 1
+    // Channel 0
+    TA1CCR0 = 32768 - 1; // T = 1 second
+    TA1CCTL0 &= ~CCIFG;
+    TA1CCTL0 |= CCIE;
+    TA1CTL = TASSEL_1 | ID_0 | MC_1 | TACLR; // Crystal ACLK, Div = 0, Up Mode
 
     _low_power_mode_3(); // Enable Low Power Mode 3
 
     //Configure the sensor
      i2c_write_word(0x44, 0x01, 0x7604);
 
-    while(1){
-
-    }
-    return 0;
+    while(1){}
 }
+
+// Variables for ISR
+#define result_reg 0x00 // Result Register
+#define sensor_addr 0b1000100
+unsigned int result;
+
 // LED ISR
-#pragma vector = TIMER0_A0_VECTOR
-__interrupt void TA0_A0_ISR(){
+unsigned int iteration = 0;
+#pragma vector = TIMER1_A0_VECTOR
+__interrupt void TA1_A0_ISR(){
+    iteration++;
 
-    TA0CCR1 += 20; // increase brightness
-    if (TA0CCR1 >= 80){
-        TA0CCR1 = 0; // roll back to zero
-    } else if (TA0CCR1 == 20){
-        TA0CCR1 -= 1; // reset to (20 - 1) from 0
+    // read LUX values and write to terminal
+    result += i2c_read_word(sensor_addr, result_reg); // read lux value from result register
+    uart_write_4dig(result*1.28); // display lux value in terminal
+    uart_write_char('\r');
+    uart_write_char('\n');
+
+    // iterate every 4 seconds
+    if (iteration == 4){
+        // change LED brightness
+        TA0CCR1 += 20; // increase brightness
+        if (TA0CCR1 >= 80){
+            TA0CCR1 = 0; // roll back to zero
+        } else if (TA0CCR1 == 20){
+            TA0CCR1 -= 1; // reset to (20 - 1) from 0
+        }
+        iteration = 0; // reset iterations
     }
 
 }
 
+/*
 #pragma vector = TIMER1_A0_VECTOR
 __interrupt void TA1_A0_ISR() {
     // Take one illuminance measurement every 1 second
@@ -213,6 +224,8 @@ __interrupt void TA1_A0_ISR() {
    // TA1CCTL0 &=~CCIFG;
     //}
 }
+*/
+
 /*
 #pragma vector = TIMER1_A1_VECTOR
 __interrupt void TA1_A1_ISR() {
