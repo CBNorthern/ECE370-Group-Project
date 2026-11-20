@@ -1,0 +1,15 @@
+///// MAIN CODE!! ////////
+#include "msp430fr6989.h"
+#include "LcdDriver/middle_driver.h"
+#include "groupProject.h"
+#include "Grlib/grlib/grlib.h"
+#include <stdint.h>
+
+void main(void){
+    WDTCTL = WDTPW | WDTHOLD; // Stop the Watchdog timer
+    PM5CTL0 &= ~LOCKLPM5; // Disable GPIO power-on default high impedance mode
+    // Write code here
+    Initialize_I2C();
+    //Initialize_UART();
+    Initialize_UART_2();
+}
