@@ -6,8 +6,8 @@
 #define TXBUFFER UCA1TXBUF // Transmit buffer
 #define RXBUFFER UCA1RXBUF // Receive buffer
 
-#include "Grlib/grlib/grlib.h"          
-#include "LcdDriver/lcd_driver.h"       
+#include "Grlib/grlib/grlib.h"
+#include "LcdDriver/lcd_driver.h"
 #include <stdio.h>
 
 #define redLED BIT0 // Red LED at P1.0
@@ -17,7 +17,8 @@
 
 //global variable for measurments
 unsigned int data = 0;
-
+unsigned int brightness_level = 0;
+unsigned int mode = 0;
 ///////// Function Headers ///////////////////////////////////
 void Initialize_I2C(void);
 int i2c_write_word(unsigned char i2c_address, unsigned char i2c_reg, unsigned int data);
@@ -46,7 +47,7 @@ void Initialize_UART(void){
 void uart_write_char(unsigned char ch){
 
     // Wait for any ongoing transmission to complete
-    while ( (FLAGS & TXFLAG)==0 ) {}
+    while ((FLAGS & TXFLAG)==0 ) {}
 
     // Write the byte to the transmit buffer
     TXBUFFER = ch;
@@ -111,25 +112,49 @@ int main(void)
     config_ACLK_to_32KHz_crystal();
 
     // Configure channel 0
-    TA0CCRO = 32768 - 1;
-    TA0CCTL0 |= CCIE;
-    TA0CCTLO &= ~CCIFG;
-
-    TACTL = TASSEL_1|ID_0|MC_2|TACTRL;
-    // Configure channel 1
-    TA0CCR1 = 65536 - 1;  // We need to do a counter so it will be 4 seconds
+    TA0CCR1 = 32768 - 1;
     TA0CCTL1 |= CCIE;
-    TA0CCTL1 &= ~CCIFG;
+    TA0CCTL1 &= ~CCIFG;   // Clear the flag
 
-    TA0CTL = TASSEL_1|ID_0|MC_2|TACTRL;
-   // Ensure the flag is cleared at the start
-    TA0CTL &= ~TAIFG;
+    // Configure channel 1
+    TA0CCR2 = 65536 - 1;  // We need to do a counter so it will be 4 seconds
+    TA0CCTL2 |= CCIE;
+    TA0CCTL2 &= ~CCIFG; // Clear the flag
+
+    TA0CTL = TASSEL_1|ID_0|MC_1|TACLR;
+
 
     _low_power_mode_3(); // Enable Low Power Mode 3
 
     //Configure the sensor
      i2c_write_word(0x44, 0x01, 0x7604);
 
+// Setting up the display
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+     // Configure SMCLK to 8 MHz (used as SPI clock)
+     CSCTL0 = CSKEY;                 // Unlock CS registers
+     CSCTL3 &= ~(BIT4|BIT5|BIT6);    // DIVS=0
+     CSCTL0_H = 0;                   // Relock the CS registers
+ ////////////////////////////////////////////////////////////////////////////////////////////
+  Graphics_Context g_sContext;        // Declare a graphic library context
+  Crystalfontz128x128_Init();         // Initialize the display
+
+  // Set the screen orientation
+  Crystalfontz128x128_SetOrientation(0);
+
+  // Initialize the context
+  Graphics_initContext(&g_sContext, &g_sCrystalfontz128x128);
+
+  // Set background and foreground colors
+  Graphics_setBackgroundColor(&g_sContext, GRAPHICS_COLOR_LIGHT_STEEL_BLUE);
+
+
+  // Set the default font for strings
+  GrContextFontSet(&g_sContext, &g_sFontFixed6x8);
+
+  // Clear the screen
+  Graphics_clearDisplay(&g_sContext);
+  ////////////////////////////////////////////////////////////////////////////////////////////
 
     while(1){
 
@@ -137,43 +162,47 @@ int main(void)
 	return 0;
 }
 
-#pragma vector = TIMER_A0_VECTOR
-_interrupt void T0A0_ISR(){
+#pragma vector = TIMER_A1_VECTOR
+__interrupt void T0A1_ISR() {
     // Take one illuminance measurement
-        uart_write_char('\r');
-        uart_write_char('\n');
-        uart_write_char('\n');
+    unsigned int i = 0;
+    if((TA0CCTL1 & CCIFG)==CCIFG){
+        for(i=0; i<4; i++){
+            uart_write_char('\r');
+            uart_write_char('\n');
+            uart_write_char('\n');
+            data = i2c_read_word(0x44, 0x00);
+            data = data*1.28;
+            uart_write_uint16(data);
 
-        data = i2c_read_word(0x44, 0x00);
-        data = data*1.28;
-        uart_write_uint16(data);
-
-    TA0CCR0 = TACCR0 + 326768;
+        }
+    TA0CCR1 = TA0CCR1 + 32768;
+    TA0CCTL1 &=~CCIFG;
+    }
 }
 
-#pragma vector = TIMER_A1_VECTOR
-_interrup void T0A1_ISR(){
+#pragma vector = TIMER_A2_VECTOR
+__interrupt void T0A2_ISR() {
     unsigned int i = 0;
     for(i = 0; i<2; i++){ // Loop it two time to get a period of 4
-        if((TA0CCTL1 & (CCITG | CCIE)) == (CCIFG |CCIE)){
-            // Disable Channel 0
-            TA0CCTL0 &= ~CCIE;
+        if((TA0CCTL2 & (CCIFG | CCIE)) == (CCIFG |CCIE)){
+            // Disable Channel 1
+            TA0CCTL1 &= ~CCIE;
             // Take the average of the mesurments from the variable
-
+              brightness_level = averag(data);
 
             // Re-Enable Channel 0
             TA0CCR1 = 65536 - 1;
-            TA0CCTL0 |= CCIE;
+            TA0CCTL1 |= CCIE;
             // Set the date variable back to zero
 
-            TA0CCR1 = TA0CCR1 + 65536;
+            TA0CCR2 = TA0CCR2 + 65536;
         }
     }
 }
 
 
 
-// Configure eUSCI in I2C master mode
 void Initialize_I2C(void) {
     // Enter reset state before the configuration starts...
     UCB1CTLW0 |= UCSWRST;
@@ -188,7 +217,6 @@ void Initialize_I2C(void) {
     // Exit the reset mode
     UCB1CTLW0 &= ~UCSWRST;
 }
-
 
 void uart_write_uint16(unsigned int n){
    unsigned int digit;
@@ -213,7 +241,6 @@ void uart_write_uint16(unsigned int n){
         digit = n%10;
         uart_write_char('0'+ digit);
     }
-
 }
 
 
@@ -275,5 +302,3 @@ int i2c_read_word(unsigned char i2c_address, unsigned char i2c_reg) {
     data2 = ( (byte1 << 8) | (byte2 & 0xFF) );
     return data2;
 }
-
-
